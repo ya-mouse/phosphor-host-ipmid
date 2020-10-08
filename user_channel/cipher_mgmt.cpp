@@ -124,7 +124,7 @@ int CipherConfig::writeCSPrivilegeLevels(const Json& jsonData)
     strncpy(tmpRandomFile, tmpFile.c_str(), tmpFile.length() + 1);
 
     int fd = mkstemp(tmpRandomFile);
-    fchmod(fd, 0644);
+    fchmod(fd, 0660);
 
     if (fd < 0)
     {

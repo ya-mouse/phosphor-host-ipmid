@@ -87,16 +87,6 @@ struct UsersTbl
     UserInfo user[ipmiMaxUsers + 1];
 };
 
-/** @brief PAM User Authentication check
- *
- *  @param[in] username - username in string
- *  @param[in] password	- password in string
- *
- *  @return status
- */
-bool pamUserCheckAuthenticate(std::string_view username,
-                              std::string_view password);
-
 class UserAccess;
 
 UserAccess& getUserAccessObject();
@@ -157,6 +147,18 @@ class UserAccess
      *  @return System privilege in string
      */
     static std::string convertToSystemPrivilege(const CommandPrivilege& value);
+
+    /** @brief set PAM socket descriptor
+     *
+     *  @param[in] pamSocket - PAM socket descriptor from parent process
+     *
+     */
+    void setPamSocket(int pamSocket);
+
+    /** @brief get PAM socket descriptor
+     *
+     */
+    int getPamSocket() const;
 
     /** @brief determines whether user name is valid
      *
@@ -381,6 +383,7 @@ class UserAccess
     sdbusplus::bus::bus bus;
     std::time_t fileLastUpdatedTime;
     bool signalHndlrObject = false;
+    int pamSocket = -1;
     boost::interprocess::file_lock sigHndlrLock;
     boost::interprocess::file_lock mutexCleanupLock;
 

@@ -18,6 +18,8 @@
 #include "apphandler.hpp"
 #include "channel_layer.hpp"
 
+#include "obmc_priv_sep_pam.hpp"
+
 #include <security/pam_appl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -26,6 +28,7 @@
 #include <boost/interprocess/sync/scoped_lock.hpp>
 #include <cerrno>
 #include <fstream>
+#include <filesystem>
 #include <nlohmann/json.hpp>
 #include <phosphor-logging/elog-errors.hpp>
 #include <phosphor-logging/log.hpp>
@@ -67,7 +70,7 @@ static constexpr const char* getObjectMethod = "GetObject";
 
 static constexpr const char* ipmiUserMutex = "ipmi_usr_mutex";
 static constexpr const char* ipmiMutexCleanupLockFile =
-    "/var/lib/ipmi/ipmi_usr_mutex_cleanup";
+    "/run/ipmi/ipmi_usr_mutex_cleanup";
 static constexpr const char* ipmiUserDataFile = "/var/lib/ipmi/ipmi_user.json";
 static constexpr const char* ipmiGrpName = "ipmi";
 static constexpr size_t privNoAccess = 0xF;
@@ -457,6 +460,9 @@ UserAccess::UserAccess() : bus(ipmid_get_sd_bus_connection())
     std::ofstream mutexCleanUpFile;
     mutexCleanUpFile.open(ipmiMutexCleanupLockFile,
                           std::ofstream::out | std::ofstream::app);
+    std::filesystem::permissions(ipmiMutexCleanupLockFile,
+                          std::filesystem::perms::group_write,
+                          std::filesystem::perm_options::add);
     if (!mutexCleanUpFile.good())
     {
         log<level::DEBUG>("Unable to open mutex cleanup file");
@@ -470,7 +476,7 @@ UserAccess::UserAccess() : bus(ipmid_get_sd_bus_connection())
     }
     mutexCleanupLock.lock_sharable();
     userMutex = std::make_unique<boost::interprocess::named_recursive_mutex>(
-        boost::interprocess::open_or_create, ipmiUserMutex);
+        boost::interprocess::open_or_create, ipmiUserMutex, boost::interprocess::permissions(0660));
 
     cacheUserDataFile();
     getSystemPrivAndGroups();
@@ -489,6 +495,16 @@ void UserAccess::setUserInfo(const uint8_t userId, UserInfo* userInfo)
               reinterpret_cast<uint8_t*>(userInfo) + sizeof(*userInfo),
               reinterpret_cast<uint8_t*>(&usersTbl.user[userId]));
     writeUserData();
+}
+
+void UserAccess::setPamSocket(int pamSocketFd)
+{
+    pamSocket = pamSocketFd;
+}
+
+int UserAccess::getPamSocket() const
+{
+    return pamSocket;
 }
 
 bool UserAccess::isValidChannel(const uint8_t chNum)
@@ -600,122 +616,10 @@ bool UserAccess::isValidUserName(const std::string& userName)
     return true;
 }
 
-/** @brief Information exchanged by pam module and application.
- *
- *  @param[in] numMsg - length of the array of pointers,msg.
- *
- *  @param[in] msg -  pointer  to an array of pointers to pam_message structure
- *
- *  @param[out] resp - struct pam response array
- *
- *  @param[in] appdataPtr - member of pam_conv structure
- *
- *  @return the response in pam response structure.
- */
-
-static int pamFunctionConversation(int numMsg, const struct pam_message** msg,
-                                   struct pam_response** resp, void* appdataPtr)
-{
-    if (appdataPtr == nullptr)
-    {
-        return PAM_AUTH_ERR;
-    }
-    size_t passSize = std::strlen(reinterpret_cast<char*>(appdataPtr)) + 1;
-    char* pass = reinterpret_cast<char*>(malloc(passSize));
-    std::strncpy(pass, reinterpret_cast<char*>(appdataPtr), passSize);
-
-    *resp = reinterpret_cast<pam_response*>(
-        calloc(numMsg, sizeof(struct pam_response)));
-
-    for (int i = 0; i < numMsg; ++i)
-    {
-        if (msg[i]->msg_style != PAM_PROMPT_ECHO_OFF)
-        {
-            continue;
-        }
-        resp[i]->resp = pass;
-    }
-    return PAM_SUCCESS;
-}
-
-/** @brief Updating the PAM password
- *
- *  @param[in] username - username in string
- *
- *  @param[in] password  - new password in string
- *
- *  @return status
- */
-
-int pamUpdatePasswd(const char* username, const char* password)
-{
-    const struct pam_conv localConversation = {pamFunctionConversation,
-                                               const_cast<char*>(password)};
-    pam_handle_t* localAuthHandle = NULL; // this gets set by pam_start
-
-    int retval =
-        pam_start("passwd", username, &localConversation, &localAuthHandle);
-
-    if (retval != PAM_SUCCESS)
-    {
-        return retval;
-    }
-
-    retval = pam_chauthtok(localAuthHandle, PAM_SILENT);
-    if (retval != PAM_SUCCESS)
-    {
-        pam_end(localAuthHandle, retval);
-        return retval;
-    }
-
-    return pam_end(localAuthHandle, PAM_SUCCESS);
-}
-
-bool pamUserCheckAuthenticate(std::string_view username,
-                              std::string_view password)
-{
-    const struct pam_conv localConversation = {
-        pamFunctionConversation, const_cast<char*>(password.data())};
-
-    pam_handle_t* localAuthHandle = NULL; // this gets set by pam_start
-
-    if (pam_start("dropbear", username.data(), &localConversation,
-                  &localAuthHandle) != PAM_SUCCESS)
-    {
-        log<level::ERR>("User Authentication Failure");
-        return false;
-    }
-
-    int retval = pam_authenticate(localAuthHandle,
-                                  PAM_SILENT | PAM_DISALLOW_NULL_AUTHTOK);
-
-    if (retval != PAM_SUCCESS)
-    {
-        log<level::DEBUG>("pam_authenticate returned failure",
-                          entry("ERROR=%d", retval));
-
-        pam_end(localAuthHandle, retval);
-        return false;
-    }
-
-    if (pam_acct_mgmt(localAuthHandle, PAM_DISALLOW_NULL_AUTHTOK) !=
-        PAM_SUCCESS)
-    {
-        pam_end(localAuthHandle, PAM_SUCCESS);
-        return false;
-    }
-
-    if (pam_end(localAuthHandle, PAM_SUCCESS) != PAM_SUCCESS)
-    {
-        return false;
-    }
-    return true;
-}
-
 Cc UserAccess::setSpecialUserPassword(const std::string& userName,
                                       const std::string& userPassword)
 {
-    if (pamUpdatePasswd(userName.c_str(), userPassword.c_str()) != PAM_SUCCESS)
+    if (obmc_priv::updatePassword(pamSocket, "passwd", userName.c_str(), userPassword.c_str()) != PAM_SUCCESS)
     {
         log<level::DEBUG>("Failed to update password");
         return ccUnspecifiedError;
@@ -736,7 +640,7 @@ Cc UserAccess::setUserPassword(const uint8_t userId, const char* userPassword)
     passwd.assign(reinterpret_cast<const char*>(userPassword), 0,
                   maxIpmi20PasswordSize);
 
-    int retval = pamUpdatePasswd(userName.c_str(), passwd.c_str());
+    int retval = obmc_priv::updatePassword(pamSocket, "passwd", userName.c_str(), passwd.c_str());
 
     switch (retval)
     {
@@ -1359,7 +1263,7 @@ void UserAccess::writeUserData()
 
     static std::string tmpFile{std::string(ipmiUserDataFile) + "_tmp"};
     int fd = open(tmpFile.c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_SYNC,
-                  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+                  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
     if (fd < 0)
     {
         log<level::ERR>("Error in creating temporary IPMI user data file");

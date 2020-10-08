@@ -18,6 +18,7 @@
 
 #include "passwd_mgr.hpp"
 #include "user_mgmt.hpp"
+#include "obmc_priv_sep_pam.hpp"
 
 namespace
 {
@@ -178,7 +179,9 @@ Cc ipmiUserSetPrivilegeAccess(const uint8_t userId, const uint8_t chNum,
 bool ipmiUserPamAuthenticate(std::string_view userName,
                              std::string_view userPassword)
 {
-    return pamUserCheckAuthenticate(userName, userPassword);
+    return obmc_priv::authenticateUser(getUserAccessObject().getPamSocket(),
+                                       "dropbear",
+                                       userName, userPassword) == PAM_SUCCESS;
 }
 
 Cc ipmiUserSetUserPayloadAccess(const uint8_t chNum, const uint8_t operation,

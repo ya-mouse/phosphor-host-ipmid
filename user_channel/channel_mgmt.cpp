@@ -26,6 +26,7 @@
 #include <exception>
 #include <experimental/filesystem>
 #include <fstream>
+#include <filesystem>
 #include <phosphor-logging/log.hpp>
 #include <sdbusplus/bus/match.hpp>
 #include <sdbusplus/server/object.hpp>
@@ -294,6 +295,9 @@ ChannelConfig::ChannelConfig() : bus(ipmid_get_sd_bus_connection())
     std::ofstream mutexCleanUpFile;
     mutexCleanUpFile.open(ipmiChMutexCleanupLockFile,
                           std::ofstream::out | std::ofstream::app);
+    std::filesystem::permissions(ipmiChMutexCleanupLockFile,
+                          std::filesystem::perms::group_write,
+                          std::filesystem::perm_options::add);
     if (!mutexCleanUpFile.good())
     {
         log<level::DEBUG>("Unable to open mutex cleanup file");
@@ -307,7 +311,8 @@ ChannelConfig::ChannelConfig() : bus(ipmid_get_sd_bus_connection())
         boost::interprocess::named_recursive_mutex::remove(ipmiChannelMutex);
         channelMutex =
             std::make_unique<boost::interprocess::named_recursive_mutex>(
-                boost::interprocess::open_or_create, ipmiChannelMutex);
+                boost::interprocess::open_or_create, ipmiChannelMutex,
+                boost::interprocess::permissions(0660));
         mutexCleanupLock.lock_sharable();
     }
     else
@@ -315,7 +320,8 @@ ChannelConfig::ChannelConfig() : bus(ipmid_get_sd_bus_connection())
         mutexCleanupLock.lock_sharable();
         channelMutex =
             std::make_unique<boost::interprocess::named_recursive_mutex>(
-                boost::interprocess::open_or_create, ipmiChannelMutex);
+                boost::interprocess::open_or_create, ipmiChannelMutex,
+                boost::interprocess::permissions(0660));
     }
 
     initChannelPersistData();
@@ -817,7 +823,7 @@ int ChannelConfig::writeJsonFile(const std::string& configFile,
 {
     const std::string tmpFile = configFile + "_tmp";
     int fd = open(tmpFile.c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_SYNC,
-                  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+                  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
     if (fd < 0)
     {
         log<level::ERR>("Error in creating json file",

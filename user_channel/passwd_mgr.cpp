@@ -25,6 +25,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <grp.h>
 
 #include <cerrno>
 #include <cstring>
@@ -72,17 +73,17 @@ void PasswdMgr::restrictFilesPermission(void)
     // Restrict file permission to owner read & write
     if (stat(passwdFileName, &st) == 0)
     {
-        if ((st.st_mode & modeMask) != (S_IRUSR | S_IWUSR))
+        if ((st.st_mode & modeMask) != (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP))
         {
-            chmod(passwdFileName, S_IRUSR | S_IWUSR);
+            chmod(passwdFileName, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
         }
     }
 
     if (stat(encryptKeyFileName, &st) == 0)
     {
-        if ((st.st_mode & modeMask) != (S_IRUSR | S_IWUSR))
+        if ((st.st_mode & modeMask) != (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP))
         {
-            chmod(encryptKeyFileName, S_IRUSR | S_IWUSR);
+            chmod(encryptKeyFileName, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
         }
     }
 }
@@ -469,8 +470,23 @@ int PasswdMgr::updatePasswdSpecialFile(const std::string& userName,
         return -EIO;
     }
 
-    // Set the file mode as read-write for owner only
-    if (fchmod(fileno((temp)()), S_IRUSR | S_IWUSR) < 0)
+#if 0
+    // Set the group to ipmi
+    errno = 0;
+    struct group *gr = getgrnam("ipmi");
+    if (gr == NULL) {
+        log<level::DEBUG>("Error getting GID for ipmi group");
+        return errno;
+    }
+
+    if (fchown(fileno((temp)()), geteuid(), gr->gr_gid) < 0) {
+        log<level::DEBUG>("Error setting fchown for temp file");
+        return -EIO;
+    }
+#endif
+
+    // Set the file mode as read-write for owner and group only
+    if (fchmod(fileno((temp)()), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP) < 0)
     {
         log<level::DEBUG>("Error setting fchmod for temp file");
         return -EIO;
